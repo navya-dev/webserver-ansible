@@ -15,7 +15,7 @@ This is executed using ec2 instance as localhost, with ansible installed on it.
 > Creating and  attaching SSL certificate.
 > Routing requests from http to https.
 
-###Prerequisites:
+### Prerequisites:
 
 Ansible 2.2
 python 2.7
