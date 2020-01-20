@@ -1,0 +1,195 @@
+---
+
+- hosts: localhost
+  pre_tasks:
+   - include_vars: ec2_vars/{{env}}.yml
+  
+
+  
+  tasks:
+
+  
+    - name: Finding localhost IP address
+      uri:
+        url: http://checkip.amazonaws.com/
+        return_content: yes
+      register: my_ip
+
+    - name: Creating security group
+      ec2_group:
+        name: webservers
+        description: Security group for my IP
+        region: us-east-1
+        rules:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: "{{ my_ip.content | replace('\n', '') }}/32"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ my_ip.content | replace('\n', '') }}/32"
+        rules_egress:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+      register: webservers_group
+
+    - name: Creating ELB that listens over port 80
+      ec2_elb_lb:
+        name: "{{ ec2-load-balancer }}"
+        state: present
+        region: us-east-1
+        zones:
+          - us-east-1c
+        listeners:
+          - protocol: http
+            load_balancer_port: 80
+            instance_port: 80
+      register: elb
+      
+
+      
+    - name: Creating EC2 instances
+      ec2:
+        key_name: "{{ ec2_key }}"
+        instance_type: "{{ ec2_instance_type }}"
+        image: "{{ ec2_image_id }}"
+        region: "{{ ec2_region }}"
+        group_id:
+          - "{{ webservers_group.group_id }}"
+          - "{{ elb.elb.security_group_ids | first }}"
+        wait: yes
+        instance_tags:
+          application: "{{ application_name }}"
+        exact_count: 1
+        count_tag:
+          application: "{{ application_name }}"
+      register: ec2_instances
+      
+      
+    - name: Storing EC2 instance IP to provision
+      add_host:
+        hostname: "{{ item.public_ip }}"
+        groupname: ec2_instance_ips
+      with_items: "{{ ec2_instances.tagged_instances }}"
+
+    - name: Waiting for servers to start
+      wait_for:
+        host: "{{ item.public_ip }}"
+        port: 22
+        timeout: 180
+      with_items: "{{ ec2_instances.tagged_instances }}"
+
+    - name: Adding EC2 instance as known hosts
+      known_hosts:
+        name: "{{ item.public_ip }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan -t rsa ' + item.public_ip) }}"
+      with_items: "{{ ec2_instances.tagged_instances }}"  
+      
+      
+      
+- hosts: ec2_instance_ips
+  remote_user: ec2-user
+  become: True
+  tasks:
+    - name: Install httpd
+      yum:
+        name: httpd
+        state: present
+        
+    - name: Creating default index page
+      copy:
+        #src: /home/ec2-user/index.html
+        dest: /var/www/html/index.html
+        content: "Hello!"
+        
+    - name: Restarting httpd
+      service:
+        name: httpd
+        state: restarted
+        
+
+- hosts: localhost
+  tasks:
+    - name: Adding EC2 instance to the ELB
+      ec2_elb:
+        state: present
+        ec2_elbs: "{{ ec2_load_balancer }}"
+        region: us-east-1
+        instance_id: "{{ item.id }}"
+      with_items: "{{ ec2_instances.tagged_instances }}"
+      
+
+- hosts: localhost
+  vars:
+  #- dnsname: your.dns.name
+  - tmppath: "./tmp/"
+  - crtpath: "{{ tmppath }}.crt"
+  - pempath: "{{ tmppath }}.pem"
+  - csrpath: "{{ tmppath }}.csr"
+  - pfxpath: "{{ tmppath }}.pfx"
+  - private_key_password: "password"
+  
+  tasks:
+  - file:
+      path: "{{ tmppath }}"
+      state: absent
+  - file:
+      path: "{{ tmppath }}"
+      state: directory
+  - name: "Generating the private key file to sign CSR"
+    openssl_privatekey:
+      path: "{{ pempath }}"
+      passphrase: "{{ private_key_password }}"
+      cipher: aes256
+  - name: "Generating CSR file signed with private key"
+    openssl_csr:
+      path: "{{ csrpath }}"
+      privatekey_path: "{{ pempath }}"
+      privatekey_passphrase: "{{ private_key_password }}"
+      common_name: some-name
+      
+  - name: "Signing CSR file as CA to turn it to certificate"
+    openssl_certificate:
+      path: "{{ crtpath }}"
+      privatekey_path: "{{ pempath }}"
+      privatekey_passphrase: "{{ private_key_password }}"
+      csr_path: "{{ csrpath }}"
+      provider: selfsigned
+
+  - name: "Converting signed certificate to PKCS12 file with attached private key"
+    openssl_pkcs12:
+      action: export
+      path: "{{ pfxpath }}"
+      friendly_name: sample-website
+      #name: "{{ dnsname }}"
+      privatekey_path: "{{ pempath }}"
+      privatekey_passphrase: "{{ private_key_password }}"
+      passphrase: password
+      certificate_path: "{{ crtpath }}"
+      state: present
+      
+  - name: "Redirect http to https using Application Load Balancer"
+    command: >
+      aws elb create-listener
+      --load-balancer-arn {{ elb.load-balancer-arn }}
+      --protocol HTTP
+      --port 80
+      --default-actions 'Type=redirect,RedirectConfig={Protocol=HTTPS,Port=443,Host="#{host}",Path="/#{path}",Query="#{query}",StatusCode=HTTP_301}'
+      
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+

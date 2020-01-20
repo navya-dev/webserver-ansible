@@ -1,0 +1,6 @@
+ec2_key: "xxxx"
+ec2_instance_type: "t2.nano"
+ec2_image_id: "ami-062f7200baf2fa504"
+ec2_region: "us-east-1"
+application_name: "xxxx_name"
+ec2_load_balancer: "xxx_name_lb"
